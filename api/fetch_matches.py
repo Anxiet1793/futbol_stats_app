@@ -1,95 +1,126 @@
 import requests
-import pymongo
+import os
+from dotenv import load_dotenv
+from datetime import datetime, timedelta
+from db.queries import insert_document, get_collection
+from models.partido_schema import ejemplo_partido # Usamos el ejemplo como base
 
-# Clave API proporcionada por API-Football
-api_key = '834369634876ea331d8bf7d5b3de9639'  # Tu clave API
+# Carga las variables de entorno para la API Key de API-Football
+# Asegúrate de tener un archivo .env en la raíz de tu proyecto con:
+# API_FOOTBALL_KEY="tu_api_key_aqui"
+load_dotenv()
 
-# URL base de la API-Football
-base_url_fixtures = 'https://v3.football.api-sports.io/fixtures?date=2025-07-11'
-base_url_statistics = 'https://api-football-v1.p.rapidapi.com/v3/statistics'
+API_FOOTBALL_KEY = os.getenv("d9c8ef2a77d6cecfbe34b05f63811a03")
+API_FOOTBALL_BASE_URL = "https://dashboard.api-football.com/profile?access"
 
-# Encabezados necesarios para la solicitud
-headers = {
-    'X-RapidAPI-Host': 'api-football-v1.p.rapidapi.com',
-    'X-RapidAPI-Key': api_key  # Usar tu clave API aquí
-}
+def fetch_and_store_matches_from_api(date_str=None, league_id=None, season=None):
+    """
+    Función para consumir la API-Football y almacenar los datos en MongoDB.
+    Esta es una implementación de ejemplo. Necesitarás ajustar los endpoints
+    y la lógica de extracción según la documentación de API-Football.
 
-# Parámetros para obtener partidos en vivo
-params = {}
+    Args:
+        date_str (str, optional): Fecha en formato 'YYYY-MM-DD' para filtrar partidos.
+        league_id (int, optional): ID de la liga para filtrar.
+        season (int, optional): Año de la temporada para filtrar.
+    """
+    if not API_FOOTBALL_KEY:
+        print("Error: La variable de entorno API_FOOTBALL_KEY no está configurada.")
+        return
 
-# Realizar la solicitud a la API para obtener los partidos en vivo
-response = requests.get(base_url_fixtures, headers=headers, params=params)
+    headers = {
+        'x-rapidapi-key': API_FOOTBALL_KEY,
+        'x-rapidapi-host': 'v3.football.api-sports.io'
+    }
 
-# Verificar si la solicitud fue exitosa
-if response.status_code == 200:
-    data = response.json()  # Parsear la respuesta JSON
-    partidos = data.get('response', [])
+    # Ejemplo de endpoint para partidos (fixtures)
+    # Consulta la documentación de API-Football para los parámetros correctos
+    # https://www.api-football.com/documentation-v3
+    endpoint = f"{API_FOOTBALL_BASE_URL}fixtures"
+    params = {}
+    if date_str:
+        params['date'] = date_str
+    if league_id:
+        params['league'] = league_id
+    if season:
+        params['season'] = season
 
-    if partidos:
-        # Conectar a MongoDB Atlas
-        connection_string = "mongodb+srv://jfalconf:miContraseñaReal@futbolstats.cty7zbc.mongodb.net/?retryWrites=true&w=majority&appName=FutbolStats"
-        client = pymongo.MongoClient(connection_string)
+    print(f"Intentando obtener datos de: {endpoint} con parámetros: {params}")
 
-        # Seleccionar la base de datos y la colección
-        db = client["futbol_db"]
-        collection = db["partidos_en_vivo"]
+    try:
+        response = requests.get(endpoint, headers=headers, params=params)
+        response.raise_for_status() # Lanza una excepción para errores HTTP
+        data = response.json()
 
-        # Procesar los partidos obtenidos de la API y almacenarlos en MongoDB
-        for partido in partidos:
-            equipo_local = partido['teams']['home']['name']
-            equipo_visitante = partido['teams']['away']['name']
-            goles_local = partido['goals']['home']
-            goles_visitante = partido['goals']['away']
-            minuto = partido['fixture']['status']['elapsed']
+        # Verifica si la respuesta contiene datos de partidos
+        if data and 'response' in data and data['response']:
+            print(f"Recibidos {len(data['response'])} partidos de la API.")
+            for match_data in data['response']:
+                # Aquí debes mapear la estructura de la respuesta de la API-Football
+                # a tu `partido_schema`. Esto es crucial y específico de la API.
+                # El siguiente es un ejemplo simplificado.
 
-            # Obtener estadísticas detalladas del partido
-            partido_id = partido['fixture']['id']
-            stats_response = requests.get(f"{base_url_statistics}/{partido_id}", headers=headers)
+                # Ejemplo de cómo podrías extraer y transformar datos:
+                # Asegúrate de que los campos existan en la respuesta de la API
+                # y maneja los casos donde puedan faltar.
+                processed_match = {
+                    "fixture_id": match_data.get('fixture', {}).get('id'),
+                    "fecha": match_data.get('fixture', {}).get('date'), # Ya debería ser ISO
+                    "equipo_local": match_data.get('teams', {}).get('home', {}).get('name'),
+                    "equipo_visitante": match_data.get('teams', {}).get('away', {}).get('name'),
+                    "es_local": True, # Esto dependerá de cómo uses el dato, es un ejemplo
+                    "goles_local": match_data.get('goals', {}).get('home'),
+                    "goles_visitante": match_data.get('goals', {}).get('away'),
+                    "posesion_local": match_data.get('statistics', [{}])[0].get('statistics', [{}])[0].get('value'), # Esto es muy simplificado, la posesión está anidada
+                    "posesion_visitante": match_data.get('statistics', [{}])[1].get('statistics', [{}])[0].get('value'),
+                    "tarjetas_amarillas_local": 0, # Placeholder, necesitarías buscar esto en las estadísticas
+                    "tarjetas_amarillas_visitante": 0, # Placeholder
+                    "remates_local": 0, # Placeholder
+                    "remates_visitante": 0, # Placeholder
+                    "liga": match_data.get('league', {}).get('name'),
+                    "temporada": match_data.get('league', {}).get('season')
+                }
 
-            if stats_response.status_code == 200:
-                stats_data = stats_response.json()
-                stats = stats_data.get('response', [])
+                # Es importante validar y limpiar los datos antes de insertar
+                # Por ejemplo, asegurarse de que los campos numéricos sean ints, etc.
+                # Aquí se usa un ejemplo de documento para simular la inserción
+                # En un caso real, usarías `processed_match`
+                insert_document(processed_match) # Inserta el documento procesado
+        else:
+            print("No se encontraron partidos para los criterios especificados o la respuesta de la API está vacía.")
 
-                if stats:
-                    # Estadísticas adicionales
-                    posesion_local = stats[0]['statistics'][0]['value']
-                    posesion_visitante = stats[0]['statistics'][1]['value']
-                    tarjetas_amarillas_local = stats[0]['statistics'][2]['value']
-                    tarjetas_amarillas_visitante = stats[0]['statistics'][3]['value']
-                    tiros_local = stats[0]['statistics'][4]['value']
-                    tiros_visitante = stats[0]['statistics'][5]['value']
+    except requests.exceptions.RequestException as e:
+        print(f"Error al conectar con la API-Football: {e}")
+    except ValueError as e:
+        print(f"Error al parsear la respuesta JSON de la API: {e}")
+    except Exception as e:
+        print(f"Ocurrió un error inesperado al obtener o procesar partidos: {e}")
 
-                    # Imprimir estadísticas detalladas del partido en vivo
-                    print(f"Partido: {equipo_local} vs {equipo_visitante}")
-                    print(f"Goles: {equipo_local} {goles_local} - {goles_visitante} {equipo_visitante}")
-                    print(f"Minuto: {minuto} minutos jugados")
-                    print(f"Posesión: {equipo_local} {posesion_local}% - {posesion_visitante}% {equipo_visitante}")
-                    print(
-                        f"Tarjetas Amarillas: {equipo_local} {tarjetas_amarillas_local} - {tarjetas_amarillas_visitante} {equipo_visitante}")
-                    print(f"Tiros: {equipo_local} {tiros_local} - {tiros_visitante} {equipo_visitante}")
-                    print("\n")
+def simulate_fetch_and_store_dummy_data(num_matches=5):
+    """
+    Simula la obtención de datos y los almacena en la base de datos.
+    Útil para pruebas sin depender de la API-Football.
+    """
+    print(f"Simulando la obtención y almacenamiento de {num_matches} partidos de prueba...")
+    for i in range(num_matches):
+        dummy_match = ejemplo_partido.copy()
+        dummy_match["fixture_id"] = dummy_match["fixture_id"] + i
+        dummy_match["equipo_local"] = f"Equipo Local {i+1}"
+        dummy_match["equipo_visitante"] = f"Equipo Visitante {i+1}"
+        dummy_match["fecha"] = (datetime.now() - timedelta(days=i)).isoformat() + "Z"
+        dummy_match["goles_local"] = i % 4
+        dummy_match["goles_visitante"] = (i + 1) % 3
+        dummy_match["liga"] = "Liga de Prueba" if i % 2 == 0 else "Otra Liga"
+        dummy_match["temporada"] = 2025
 
-                    # Crear un documento con los datos del partido
-                    partido_data = {
-                        "equipo_local": equipo_local,
-                        "equipo_visitante": equipo_visitante,
-                        "goles_local": goles_local,
-                        "goles_visitante": goles_visitante,
-                        "minuto": minuto,
-                        "posesion_local": posesion_local,
-                        "posesion_visitante": posesion_visitante,
-                        "tarjetas_amarillas_local": tarjetas_amarillas_local,
-                        "tarjetas_amarillas_visitante": tarjetas_amarillas_visitante,
-                        "tiros_local": tiros_local,
-                        "tiros_visitante": tiros_visitante
-                    }
+        insert_document(dummy_match)
+    print(f"Se insertaron {num_matches} partidos de prueba en MongoDB.")
 
-                    # Insertar o actualizar los datos del partido en MongoDB
-                    collection.update_one({"equipo_local": equipo_local, "equipo_visitante": equipo_visitante},
-                                          {"$set": partido_data}, upsert=True)
+# Ejemplo de uso (opcional, para pruebas)
+if __name__ == "__main__":
+    # Para probar la obtención de datos reales, descomenta la línea de abajo
+    # y asegúrate de tener tu API_FOOTBALL_KEY configurada.
+    # Fetch_and_store_matches_from_api(date_str="2024-07-10", league_id=39, season=2023) # Premier League, temporada 2023
 
-        print("Datos insertados correctamente en MongoDB.")
-    else:
-        print("No hay partidos en vivo en este momento.")
-else:
-    print(f"Error al obtener datos: {response.status_code}")
+    # Para simular datos de prueba sin la API
+    simulate_fetch_and_store_dummy_data(num_matches=10)
